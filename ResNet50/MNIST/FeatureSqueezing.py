@@ -1,4 +1,5 @@
-"""#Imports"""
+
+## Imports
 
 import os
 import time
@@ -13,25 +14,25 @@ from torch.utils.data import DataLoader
 
 from torchvision import datasets
 from torchvision import transforms
-
+from art.defences.preprocessor import FeatureSqueezing
 import matplotlib.pyplot as plt
 from PIL import Image
-from art.defences.preprocessor import FeatureSqueezing
 
 
 if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
 
-"""#Model Settings"""
+"""## Model Settings"""
+
 ##########################
 ### SETTINGS
 ##########################
 
 # Hyperparameters
 RANDOM_SEED = 1
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 BATCH_SIZE = 128
-NUM_EPOCHS = 20
+NUM_EPOCHS = 10
 
 # Architecture
 NUM_FEATURES = 28*28
@@ -41,33 +42,34 @@ NUM_CLASSES = 10
 DEVICE = "cuda:0"
 GRAYSCALE = True
 
-"""#MNIST Dataset"""
+"""### MNIST Dataset"""
+
 ##########################
 ### MNIST DATASET
 ##########################
 
 # Note transforms.ToTensor() scales input images
 # to 0-1 range
-train_dataset = datasets.MNIST(root='data', 
-                               train=True, 
+train_dataset = datasets.MNIST(root='data',
+                               train=True,
                                transform=transforms.ToTensor(),
                                download=True)
 
-test_dataset = datasets.MNIST(root='data', 
-                              train=False, 
+test_dataset = datasets.MNIST(root='data',
+                              train=False,
                               transform=transforms.ToTensor())
 
 
-train_loader = DataLoader(dataset=train_dataset, 
-                          batch_size=BATCH_SIZE, 
+train_loader = DataLoader(dataset=train_dataset,
+                          batch_size=BATCH_SIZE,
                           shuffle=True)
 
-test_loader = DataLoader(dataset=test_dataset, 
-                         batch_size=BATCH_SIZE, 
+test_loader = DataLoader(dataset=test_dataset,
+                         batch_size=BATCH_SIZE,
                          shuffle=False)
 
 # Checking the dataset
-for images, labels in train_loader:  
+for images, labels in train_loader:
     print('Image batch dimensions:', images.shape)
     print('Image label dimensions:', labels.shape)
     break
@@ -78,15 +80,14 @@ torch.manual_seed(0)
 for epoch in range(2):
 
     for batch_idx, (x, y) in enumerate(train_loader):
-        
+
         print('Epoch:', epoch+1, end='')
         print(' | Batch index:', batch_idx, end='')
         print(' | Batch size:', y.size()[0])
-        
+
         x = x.to(device)
         y = y.to(device)
         break
-
 
 ##########################
 ### MODEL
@@ -349,7 +350,8 @@ target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
 print("Classification report after Training using Feature Squeezing: ")
 print(classification_report(y_true, y_pred, target_names=target_names))
 
-"""## MODEL WRAPPERS"""
+
+
 #Importing Adversarial attacks
 from art.estimators.classification import PyTorchClassifier
 from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
@@ -379,6 +381,75 @@ classifier = PyTorchClassifier(
     device_type=DEVICE
 )
 
+"""# No defense attacks"""
+from sklearn.metrics import classification_report
+
+def evaluate_adversarial_attack(model, attack, data_loader, device):
+    model.eval()  # Set the model to evaluation mode
+    total_correct = 0
+    total_examples = 0
+    predicted_labels = []
+    true_labels = []
+    total_inference_time = 0
+
+    for images, labels in data_loader:
+        images_np = images.numpy()  # Convert images to NumPy array for ART
+        start_time = time.time()  # Start timing before generating adversarial examples
+
+        # Generate adversarial examples
+        x_test_adv = attack.generate(x=images_np)
+
+        # Convert adversarial examples back to PyTorch tensors and move to the correct device
+        x_test_adv_torch = torch.from_numpy(x_test_adv).to(device)
+        labels = labels.to(device)
+
+        # Perform inference on adversarial examples
+        logits, _ = model(x_test_adv_torch)
+        _, predictions = torch.max(logits, 1)
+        end_time = time.time()  # End timing after predictions
+
+        # Measure inference time
+        total_inference_time += (end_time - start_time)
+
+        # Update the accumulators
+        total_correct += (predictions == labels).sum().item()
+        total_examples += labels.size(0)
+        predicted_labels.extend(predictions.cpu().numpy())
+        true_labels.extend(labels.cpu().numpy())
+
+    # Calculate the overall accuracy
+    accuracy = (total_correct / total_examples * 100) if total_examples > 0 else 0
+    class_report = classification_report(true_labels, predicted_labels, target_names=[f"Class {i}" for i in range(10)])
+
+    # Calculate and print inference speed per 1000 images
+    time_per_thousand = (total_inference_time / total_examples) * 1000 if total_examples > 0 else 0
+
+    return accuracy, class_report, time_per_thousand
+
+# Usage example with FGSM and PGD:
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)  # Transfer the model to the appropriate device
+
+# Define FGSM and PGD attacks
+from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
+
+fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)
+pgd_attack = ProjectedGradientDescent(estimator=classifier, eps=0.1, max_iter=40)
+
+# Evaluate FGSM attack
+accuracy_fgsm, report_fgsm, speed_fgsm = evaluate_adversarial_attack(model, fgsm_attack, test_loader, device)
+print(f"FGSM Attack Accuracy: {accuracy_fgsm:.2f}%")
+print("FGSM Classification Report:\n", report_fgsm)
+print(f"FGSM Inference Speed: {speed_fgsm:.2f} ms per 1000 images")
+
+# Evaluate PGD attack
+accuracy_pgd, report_pgd, speed_pgd = evaluate_adversarial_attack(model, pgd_attack, test_loader, device)
+print(f"PGD Attack Accuracy: {accuracy_pgd:.2f}%")
+print("PGD Classification Report:\n", report_pgd)
+print(f"PGD Inference Speed: {speed_pgd:.2f} ms per 1000 images")
+
+
+
 
 """#Post Processing Techniques"""
 
@@ -386,336 +457,258 @@ classifier = PyTorchClassifier(
 ### GAUSSIAN NOISE #######
 #############################
 
+import torch
+import numpy as np
+from sklearn.metrics import classification_report
+from art.defences.postprocessor import GaussianNoise
+from time import time
+
+#Accuracy without attacks:
 from art.defences.postprocessor import GaussianNoise
 
 # Initialize the GaussianNoise postprocessor
 gaussian_noise_postprocessor = GaussianNoise(scale=0.2, apply_fit=False, apply_predict=True)
 
+model.eval()  # Ensure the model is in evaluation mode
+y_true = []
+y_pred = []
+total_inference_time = 0  # Initialize variable to measure inference time
 
-# On CLEAN IMAGES
-# Variables to hold metrics
-total_correct = 0
-total_examples = 0
-predicted_labels = []
-true_labels = []
-
-# Ensure the model is in evaluation mode
-model.eval()
-
-for images, labels in test_loader:
-    # Convert images to NumPy array for ART
-    images_np = images.numpy()
-
-    # Apply Gaussian Noise to clean examples
-    images_np_noised = gaussian_noise_postprocessor(images_np)
-
-    # Convert noised images back to PyTorch tensors and move to the correct device
-    images_noised_torch = torch.from_numpy(images_np_noised).to(DEVICE)
-    labels = labels.to(DEVICE)
-
-    # Perform inference on noised examples
-    logits, _ = model(images_noised_torch)
-    _, predictions = torch.max(logits, dim=1)
-
-    # Update the accumulators
-    total_correct += (predictions == labels).sum().item()
-    total_examples += labels.size(0)
-
-    # Accumulate predicted and true labels for later analysis
-    predicted_labels.extend(predictions.cpu().numpy())
-    true_labels.extend(labels.cpu().numpy())
-
-# Calculate the overall accuracy
-accuracy_noised = total_correct / total_examples
-print(f"Accuracy on clean examples with Gaussian Noise: {accuracy_noised * 100:.2f}%")
-
-# Generate classification report
-target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-print(classification_report(true_labels, predicted_labels, target_names=target_names))
-
-#FAST GRADIENT SIGN METHOD
-# Create FGSM attack
-fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)
+import time
 from sklearn.metrics import classification_report
 
-total_correct = 0
-total_examples = 0
-predicted_labels = []
-true_labels = []
+with torch.set_grad_enabled(False):  # Save memory during inference
+    for batch_idx, (features, targets) in enumerate(test_loader):
+        features = features.to(DEVICE)
+        targets = targets.to(DEVICE)
 
-# Ensure the model is in evaluation mode
-model.eval()
+        # Start timing here
+        start_time = time.time()
 
-for images, labels in test_loader:
-    # Convert images to NumPy array for ART
-    images_np = images.numpy()
+        # Apply Gaussian noise
+        features_np = features.cpu().numpy()  # Convert to numpy array for Gaussian noise application
+        noised_features_np = gaussian_noise_postprocessor(features_np)  # Apply Gaussian noise
+        noised_features = torch.from_numpy(noised_features_np).to(DEVICE)  # Convert back to tensor and send to device
 
-    # Generate adversarial examples
-    x_test_adv = fgsm_attack.generate(x=images_np)
+        # Forward pass with noised data
+        logits, probas = model(noised_features)
+        _, predicted_labels = torch.max(probas, 1)
 
-    # Apply Gaussian Noise to adversarial examples
-    x_test_adv_noised = gaussian_noise_postprocessor(x_test_adv)
+        # End timing here
+        end_time = time.time()
+        total_inference_time += (end_time - start_time)
 
-    # Convert noised adversarial examples back to PyTorch tensors and move to the correct device
-    x_test_adv_noised_torch = torch.from_numpy(x_test_adv_noised).to(DEVICE)
-    labels = labels.to(DEVICE)
-
-    # Perform inference on noised adversarial examples
-    logits, _ = model(x_test_adv_noised_torch)
-    _, predictions = torch.max(logits, dim=1)
-
-    # Update the accumulators
-    total_correct += (predictions == labels).sum().item()
-    total_examples += labels.size(0)
-
-    # Accumulate predicted and true labels
-    predicted_labels.extend(predictions.cpu().numpy())
-    true_labels.extend(labels.cpu().numpy())
-
-# Calculate the overall accuracy
-accuracy_fgsm = total_correct / total_examples
-print(f"Accuracy on FGSM adversarial examples defense: Feature Squeezing - Gaussian Noise: {accuracy_fgsm * 100:.2f}%")
+        # Append to lists for evaluation
+        y_true.extend(targets.cpu().numpy())
+        y_pred.extend(predicted_labels.cpu().numpy())
 
 # Generate classification report
 target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-print(classification_report(true_labels, predicted_labels, target_names=target_names))
+classification_report_str = classification_report(y_true, y_pred, target_names=target_names)
+print('Accuracy on clean test images with FeatureSqueezing training and Gaussian postprocessor: ')
+print(classification_report_str)
 
-"""#PROJECT GRADIENT DESCENT"""
+# Calculate and print inference speed per 1000 images
+total_images = len(y_true)
+time_per_thousand = (total_inference_time / total_images) * 1000 if total_images > 0 else 0
+print(f"Inference speed on FeatureSqueezing - Guassian without any attack: {time_per_thousand:.2f} milliseconds per 1000 images")
 
-# Create PGD attack
+
+#Attacks
+
+def evaluate_attack_with_gaussian_noise_defense(model, attack, data_loader, device, noise_scale=0.2):
+    # Initialize the GaussianNoise postprocessor
+    gaussian_noise_postprocessor = GaussianNoise(scale=noise_scale, apply_fit=False, apply_predict=True)
+
+    model.eval()  # Ensure the model is in evaluation mode
+    total_correct = 0
+    total_examples = 0
+    predicted_labels = []
+    true_labels = []
+    inference_time = 0
+
+    for images, labels in data_loader:
+        images_np = images.numpy()  # Convert images to NumPy array for ART
+
+        start_time = time.time()
+        # Generate adversarial examples
+        x_test_adv = attack.generate(x=images_np)
+
+        # Apply Gaussian Noise to adversarial examples
+        x_test_adv_noised = gaussian_noise_postprocessor(x_test_adv)
+
+        # Convert noised adversarial examples back to PyTorch tensors and move to the correct device
+        x_test_adv_noised_torch = torch.from_numpy(x_test_adv_noised).to(device)
+        labels = labels.to(device)
+
+        # Perform inference on noised adversarial examples
+        logits, _ = model(x_test_adv_noised_torch)
+        _, predictions = torch.max(logits, dim=1)
+        inference_time += time.time() - start_time
+
+        # Update the accumulators
+        total_correct += (predictions == labels).sum().item()
+        total_examples += labels.size(0)
+        predicted_labels.extend(predictions.cpu().numpy())
+        true_labels.extend(labels.cpu().numpy())
+
+    # Calculate the overall accuracy and generate classification report
+    accuracy = total_correct / total_examples * 100 if total_examples > 0 else 0
+    class_report = classification_report(true_labels, predicted_labels, target_names=[f"Class {i}" for i in range(10)])
+    time_per_thousand = (inference_time / total_examples) * 1000 if total_examples > 0 else 0
+
+    return accuracy, class_report, time_per_thousand
+
+# Example usage with FGSM and PGD
+from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)  # Transfer the model to the appropriate device
+
+# Define FGSM and PGD attacks
+fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)
 pgd_attack = ProjectedGradientDescent(estimator=classifier, eps=0.1, max_iter=40)
 
-total_correct = 0
-total_examples = 0
-predicted_labels = []
-true_labels = []
+# Evaluate FGSM attack with Gaussian Noise
+accuracy, report, speed = evaluate_attack_with_gaussian_noise_defense(model, fgsm_attack, test_loader, device)
+print(f"FGSM Attack Accuracy with FeatureSqueezing - Gaussian Noise: {accuracy:.2f}%")
+print("FGSM Classification Report with FeatureSqueezing - Gaussian Noise:\n", report)
+print(f"FGSM Inference Speed: {speed:.2f} ms per 1000 images")
 
-# Create PGD attack
+# Evaluate PGD attack with Gaussian Noise
+accuracy, report, speed = evaluate_attack_with_gaussian_noise_defense(model, pgd_attack, test_loader, device)
+print(f"PGD Attack Accuracy with FeatureSqueezing - Gaussian Noise: {accuracy:.2f}%")
+print("PGD Classification Report with FeatureSqueezing - Gaussian Noise:\n", report)
+print(f"PGD Inference Speed: {speed:.2f} ms per 1000 images")
 
-# Ensure the model is in evaluation mode
-model.eval()
-
-for images, labels in test_loader:
-    # Convert images to NumPy array for ART
-    images_np = images.numpy()
-
-    # Generate adversarial examples using PGD attack
-    x_test_adv = pgd_attack.generate(x=images_np)
-
-    # Apply Gaussian Noise to adversarial examples
-    x_test_adv_noised = gaussian_noise_postprocessor(x_test_adv)
-
-    # Convert noised adversarial examples back to PyTorch tensors and move to the correct device
-    x_test_adv_noised_torch = torch.from_numpy(x_test_adv_noised).to(DEVICE)
-    labels = labels.to(DEVICE)
-
-    # Perform inference on noised adversarial examples
-    logits, _ = model(x_test_adv_noised_torch)
-    _, predictions = torch.max(logits, dim=1)
-
-    # Update the accumulators
-    total_correct += (predictions == labels).sum().item()
-    total_examples += labels.size(0)
-
-    # Accumulate predicted and true labels
-    predicted_labels.extend(predictions.cpu().numpy())
-    true_labels.extend(labels.cpu().numpy())
-
-# Calculate the overall accuracy
-accuracy_pgd = total_correct / total_examples
-print(f"Accuracy on PGD adversarial examples defense: Feature Squeezing - Gaussian Noise: {accuracy_pgd * 100:.2f}%")
-
-# Generate classification report
-target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-print(classification_report(true_labels, predicted_labels, target_names=target_names))
 
 
 ##############################
 ### HIGH CONFIDENCE #######
 #############################
+import torch
+from sklearn.metrics import classification_report
+
+"""# High confidence without attacks"""
 from art.defences.postprocessor import HighConfidence
 
+# Initialize the HighConfidence postprocessor
 high_confidence_postprocessor = HighConfidence(cutoff=0.50, apply_fit=False, apply_predict=True)
 
+model.eval()  # Set the model to evaluation mode
+y_true = []
+y_pred = []
+y_pred_confident = []
 
-"""#ON CLEAN IMAGES"""
-from sklearn.metrics import classification_report
-import torch
+with torch.set_grad_enabled(False):  # Disable gradients for inference efficiency
+    for batch_idx, (features, targets) in enumerate(test_loader):
+        features = features.to(DEVICE)
+        targets = targets.to(DEVICE)
 
-def compute_accuracy_with_high_confidence_on_clean_images(model, data_loader, device):
-    correct_pred, num_examples = 0, 0
-    true_labels = []
+        # Perform inference
+        logits, probas = model(features)
+        _, predicted_labels = torch.max(probas, 1)
+
+        # Apply high confidence postprocessing
+        confident_probas = high_confidence_postprocessor(probas.cpu().numpy())
+        _, confident_labels = torch.max(torch.tensor(confident_probas), 1)
+
+        # Append original predictions
+        y_true.extend(targets.cpu().numpy())
+        y_pred.extend(predicted_labels.cpu().numpy())
+
+        # Append high confidence predictions
+        y_pred_confident.extend(confident_labels.numpy())
+
+# Generate and print classification reports
+target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
+
+print("High Confidence Classification Report:")
+print(classification_report(y_true, y_pred_confident, target_names=target_names, zero_division=0))
+
+
+
+"""# Attacks"""
+def evaluate_adversarial_attack_with_high_confidence(model, attack, data_loader, device, noise_scale=0.2):
+    # Initialize the HighConfidence postprocessor
+    high_confidence_postprocessor = HighConfidence(cutoff=0.50, apply_fit=False, apply_predict=True)
+
+    model.eval()  # Set the model to evaluation mode
+    total_correct = 0
+    total_examples = 0
     predicted_labels = []
-    model.eval()
-
-    for images, labels in data_loader:
-        images, labels = images.to(device), labels.to(device)
-
-        with torch.no_grad():
-            logits, probas = model(images)
-
-            # Apply High Confidence postprocessing
-            probas_np = probas.cpu().numpy()  # Convert to NumPy array for ART
-            probas_postprocessed_np = high_confidence_postprocessor(probas_np)  # Apply HighConfidence
-            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
-
-            # Predict labels based on postprocessed probabilities
-            predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
-
-            # Accumulate true labels and predicted labels for classification report
-            true_labels.extend(labels.cpu().numpy())
-            predicted_labels.extend(predicted_labels_batch.cpu().numpy())
-
-            # Calculate correct predictions
-            correct_pred += (predicted_labels_batch == labels).sum().item()
-            num_examples += labels.size(0)
-
-    accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy with High Confidence postprocessing on clean images: {accuracy:.2f}%')
-
-    # Generate classification report
-    target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-    print(classification_report(true_labels, predicted_labels, target_names=target_names, digits=4))
-
-# Usage of the function
-compute_accuracy_with_high_confidence_on_clean_images(model, test_loader, DEVICE)
-
-
-
-"""# Fast Gradient Sign Method"""
-
-def compute_accuracy_with_high_confidence_on_fgsm(model, data_loader, device):
-    correct_pred, num_examples = 0, 0
     true_labels = []
-    predicted_labels = []
-    model.eval()
+    total_inference_time = 0
 
     for images, labels in data_loader:
         images_np = images.numpy()  # Convert images to NumPy array for ART
 
-        # Generate FGSM adversarial examples
-        x_test_adv = fgsm_attack.generate(x=images_np)
+        start_time = time.time()  # Start timing before generating adversarial examples
+
+        # Generate adversarial examples
+        x_test_adv = attack.generate(x=images_np)
 
         # Convert adversarial examples back to PyTorch tensors and move to the correct device
         x_test_adv_torch = torch.from_numpy(x_test_adv).to(device)
         labels = labels.to(device)
 
-        with torch.no_grad():
-            logits, probas = model(x_test_adv_torch)
+        # Perform inference on adversarial examples
+        logits, probas = model(x_test_adv_torch)
 
-            # Apply High Confidence postprocessing
-            probas_np = probas.cpu().numpy()  # Convert to NumPy array for ART
-            probas_postprocessed_np = high_confidence_postprocessor(probas_np)  # Apply HighConfidence
-            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
+         # Apply High Confidence postprocessing
+        probas_detached = probas.detach().cpu().numpy()  # Detach and convert to NumPy array
+        probas_postprocessed_np = high_confidence_postprocessor(probas_detached)  # Apply HighConfidence
+        probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
 
-            # Predict labels based on postprocessed probabilities
-            predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
+        # Predict labels based on postprocessed probabilities
+        _, predicted_labels_batch = torch.max(probas_postprocessed, 1)
 
-            # Accumulate true labels and predicted labels for classification report
-            true_labels.extend(labels.cpu().numpy())
-            predicted_labels.extend(predicted_labels_batch.cpu().numpy())
+        # End timing here
+        end_time = time.time()
+        total_inference_time += (end_time - start_time)
 
-            # Calculate correct predictions
-            correct_pred += (predicted_labels_batch == labels).sum().item()
-            num_examples += labels.size(0)
+        # Update the accumulators
+        total_correct += (predicted_labels_batch == labels).sum().item()
+        total_examples += labels.size(0)
+        predicted_labels.extend(predicted_labels_batch.cpu().numpy())
+        true_labels.extend(labels.cpu().numpy())
 
-    accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy on FGSM adversarial examples defense: Feature Squeezing - High Confidence postprocessing: {accuracy:.2f}%')
+    # Calculate the overall accuracy and generate classification report
+    accuracy = total_correct / total_examples * 100 if total_examples > 0 else 0
+    class_report = classification_report(true_labels, predicted_labels, target_names=[f"Class {i}" for i in range(10)])
+    time_per_thousand = (total_inference_time / total_examples) * 1000 if total_examples > 0 else 0
 
-    # Generate classification report
-    target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-    print(classification_report(true_labels, predicted_labels, target_names=target_names))
+    return accuracy, class_report, time_per_thousand
 
-compute_accuracy_with_high_confidence_on_fgsm(model, test_loader, DEVICE)
+# Usage example with FGSM and PGD:
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)  # Transfer the model to the appropriate device
 
-"""# Project Gradient Descent"""
+# Define FGSM and PGD attacks
+from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
+fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)
+pgd_attack = ProjectedGradientDescent(estimator=classifier, eps=0.1, max_iter=40)
 
-from sklearn.metrics import classification_report
+# Evaluate FGSM attack with High Confidence
+accuracy, report, speed = evaluate_adversarial_attack_with_high_confidence(model, fgsm_attack, test_loader, device)
+print(f"FGSM Attack Accuracy with FeatureSqueezing - High Confidence: {accuracy:.2f}%")
+print("FGSM Classification Report with FeatureSqueezing - High Confidence:\n", report)
+print(f"FGSM Inference Speed: {speed:.2f} ms per 1000 images")
 
-def compute_accuracy_with_high_confidence_on_pgd(model, data_loader, device):
-    correct_pred, num_examples = 0, 0
-    true_labels = []
-    predicted_labels = []
-    model.eval()
-
-    for images, labels in data_loader:
-        images_np = images.numpy()  # Convert images to NumPy array for ART
-
-        # Generate PGD adversarial examples
-        x_test_adv = pgd_attack.generate(x=images_np)
-
-        # Convert adversarial examples back to PyTorch tensors and move to the correct device
-        x_test_adv_torch = torch.from_numpy(x_test_adv).to(device)
-        labels = labels.to(device)
-
-        with torch.no_grad():
-            logits, probas = model(x_test_adv_torch)
-
-            # Apply High Confidence postprocessing
-            probas_np = probas.cpu().numpy()  # Convert to NumPy array for ART
-            probas_postprocessed_np = high_confidence_postprocessor(probas_np)  # Apply HighConfidence
-            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
-
-            # Predict labels based on postprocessed probabilities
-            predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
-
-            # Accumulate true labels and predicted labels for classification report
-            true_labels.extend(labels.cpu().numpy())
-            predicted_labels.extend(predicted_labels_batch.cpu().numpy())
-
-            # Calculate correct predictions
-            correct_pred += (predicted_labels_batch == labels).sum().item()
-            num_examples += labels.size(0)
-
-    accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy on PGD adversarial examples defense: Feature Squeezing - High Confidence postprocessing: {accuracy:.2f}%')
-
-    # Generate classification report
-    target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-    print(classification_report(true_labels, predicted_labels, target_names=target_names))
-
-compute_accuracy_with_high_confidence_on_pgd(model, test_loader, DEVICE)
+# Evaluate PGD attack with High Confidence
+accuracy, report, speed = evaluate_adversarial_attack_with_high_confidence(model, pgd_attack, test_loader, device)
+print(f"PGD Attack Accuracy with FeatureSqueezing -  High Confidence: {accuracy:.2f}%")
+print("PGD Classification Report with FeatureSqueezing - High Confidence:\n", report)
+print(f"PGD Inference Speed: {speed:.2f} ms per 1000 images")
 
 ##############################
 #### REVERSE SIGMOID #######
 #############################
 
 from art.defences.postprocessor import ReverseSigmoid
-
 reverse_sigmoid_postprocessor = ReverseSigmoid(beta=1.0, gamma=0.1, apply_fit=False, apply_predict=True)
 
-#Get Model predictions
-model = model.to(device)
-model.eval()  # Set the model to evaluation mode
-
-# Initialize a list to store the probabilities
-probabilities = []
-
-with torch.no_grad():  # Inference without gradient calculation
-    for images, _ in test_loader:  # Use the test_loader you defined
-        images = images.to(device)  # Move images to the configured device
-        _, probas = model(images)  # Get logits and probabilities from your model
-        probabilities.extend(probas.cpu().numpy())  # Store probabilities
-
-# Convert the list of probabilities to a NumPy array
-probabilities = np.array(probabilities)
-
-# Apply ReverseSigmoid postprocessing
-postprocessed_predictions = reverse_sigmoid_postprocessor(probabilities)
-# Assuming postprocessed_predictions is a numpy array of shape (num_samples, num_classes)
-postprocessed_labels = np.argmax(postprocessed_predictions, axis=1)
-
-ground_truth = []
-
-for _, labels in test_loader:
-    ground_truth.extend(labels.numpy())
-
-ground_truth = np.array(ground_truth)
-
-
-"""#ON CLEAN IMAGES"""
-
-
+"""#Accuracy on clean images RS without attacks"""
 def evaluate_with_reverse_sigmoid(model, data_loader, device):
     model.eval()  # Set the model to evaluation mode
     true_labels = []
@@ -724,9 +717,10 @@ def evaluate_with_reverse_sigmoid(model, data_loader, device):
 
     with torch.no_grad():
         for images, labels in data_loader:
+            start_time = time.time()
             images = images.to(device)
             labels = labels.to(device)
-
+            total_inference_time = 0
             _, probas = model(images)  # Get the logits and probabilities from your model
             
             # Convert probabilities to NumPy for postprocessing
@@ -741,6 +735,9 @@ def evaluate_with_reverse_sigmoid(model, data_loader, device):
             # Predict labels based on postprocessed probabilities
             predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
 
+            # End timing here
+            end_time = time.time()
+            total_inference_time += (end_time - start_time)
             # Accumulate true and predicted labels for classification report
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted_labels_batch.cpu().numpy())
@@ -751,46 +748,53 @@ def evaluate_with_reverse_sigmoid(model, data_loader, device):
 
     # Calculate and print accuracy
     accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy on CLean Test IMages with Reverse Sigmoid postprocessing: {accuracy:.2f}%')
+    print(f'Accuracy on CLean Test IMages with FeatureSqueezing - Reverse Sigmoid postprocessing: {accuracy:.2f}%')
 
     # Generate and print classification report
     print(classification_report(true_labels, predicted_labels, digits=4))
-
+    time_per_thousand = (total_inference_time / num_examples) * 1000 if num_examples > 0 else 0
+    print('Inference time / 100 images: ', time_per_thousand)
 # Assuming you have defined test_loader and DEVICE
 evaluate_with_reverse_sigmoid(model, test_loader, DEVICE)
 
 
-"""#Fast Gradient Sign Method"""
-from sklearn.metrics import classification_report
+"""#on attacks"""
+from art.defences.postprocessor import ReverseSigmoid
 
-def compute_accuracy_with_reverse_sigmoid_on_fgsm(model, data_loader, device):
+def evaluate_model_with_reverse_sigmoid_and_attack(model, data_loader, device, attack, reverse_sigmoid_params={'beta': 1.0, 'gamma': 0.1}):
+    # Initialize the ReverseSigmoid postprocessor
+    reverse_sigmoid_postprocessor = ReverseSigmoid(beta=1.0, gamma=0.1, apply_fit=False, apply_predict=True)
+
+    model.eval()  # Set the model to evaluation mode
     correct_pred, num_examples = 0, 0
     true_labels = []
     predicted_labels = []
-    model.eval()
+    total_inference_time = 0  # Initialize total inference time
 
     for images, labels in data_loader:
         images_np = images.numpy()  # Convert images to NumPy array for ART
 
-        # Generate FGSM adversarial examples
-        x_test_adv = fgsm_attack.generate(x=images_np)
+        # Generate adversarial examples
+        x_test_adv = attack.generate(x=images_np)
 
         # Convert adversarial examples back to PyTorch tensors and move to the correct device
         x_test_adv_torch = torch.from_numpy(x_test_adv).to(device)
         labels = labels.to(device)
+
+        start_time = time.time()  # Start timing before model processing
 
         with torch.no_grad():
             logits, probas = model(x_test_adv_torch)
 
             # Apply Reverse Sigmoid postprocessing
             probas_np = probas.cpu().numpy()  # Convert to NumPy array for ART
-            probas_postprocessed_np = reverse_sigmoid_postprocessor(probas_np)  # Apply ReverseSigmoid
-            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
+            probas_postprocessed_np = reverse_sigmoid_postprocessor(probas_np)
+            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)
 
             # Predict labels based on postprocessed probabilities
             predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
 
-            # Accumulate true labels and predicted labels for classification report
+            # Accumulate true and predicted labels for classification report
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted_labels_batch.cpu().numpy())
 
@@ -798,59 +802,33 @@ def compute_accuracy_with_reverse_sigmoid_on_fgsm(model, data_loader, device):
             correct_pred += (predicted_labels_batch == labels).sum().item()
             num_examples += labels.size(0)
 
-    accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy on FGSM adversarial examples defense: Feature Squeezing - Reverse Sigmod: {accuracy:.2f}%')
-
-    # Generate classification report
-    target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-    print(classification_report(true_labels, predicted_labels, target_names=target_names))
-
-compute_accuracy_with_reverse_sigmoid_on_fgsm(model, test_loader, DEVICE)
-
-from sklearn.metrics import classification_report
-
-def compute_accuracy_with_reverse_sigmoid_on_pgd(model, data_loader, device):
-    correct_pred, num_examples = 0, 0
-    true_labels = []
-    predicted_labels = []
-    model.eval()
-
-    for images, labels in data_loader:
-        images_np = images.numpy()  # Convert images to NumPy array for ART
-
-        # Generate PGD adversarial examples
-        x_test_adv = pgd_attack.generate(x=images_np)
-
-        # Convert adversarial examples back to PyTorch tensors and move to the correct device
-        x_test_adv_torch = torch.from_numpy(x_test_adv).to(device)
-        labels = labels.to(device)
-
-        with torch.no_grad():
-            logits, probas = model(x_test_adv_torch)
-
-            # Apply Reverse Sigmoid postprocessing
-            probas_np = probas.cpu().numpy()  # Convert to NumPy array for ART
-            probas_postprocessed_np = reverse_sigmoid_postprocessor(probas_np)  # Apply ReverseSigmoid
-            probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
-
-            # Predict labels based on postprocessed probabilities
-            predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
-
-            # Accumulate true labels and predicted labels for classification report
-            true_labels.extend(labels.cpu().numpy())
-            predicted_labels.extend(predicted_labels_batch.cpu().numpy())
-
-            # Calculate correct predictions
-            correct_pred += (predicted_labels_batch == labels).sum().item()
-            num_examples += labels.size(0)
+        end_time = time.time()  # End timing after processing
+        total_inference_time += end_time - start_time  # Accumulate total inference time
 
     accuracy = (correct_pred / num_examples) * 100 if num_examples > 0 else 0
-    print(f'Accuracy on PGD adversarial examples defense: Feature Squeezing - Reverse Sigmoid : {accuracy:.2f}%')
+    print(f'Accuracy with {attack.__class__.__name__} and FeatureSqueezing - Reverse Sigmoid defense: {accuracy:.2f}%')
 
     # Generate classification report
-    target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
+    target_names = [f"Class {i}" for i in range(10)]
     print(classification_report(true_labels, predicted_labels, target_names=target_names))
 
-compute_accuracy_with_reverse_sigmoid_on_pgd(model, test_loader, DEVICE)
+    # Calculate and display inference time per 1000 images
+    if num_examples > 0:
+        time_per_thousand = (total_inference_time / num_examples) * 1000
+        print(f"Inference time for 1000 images: {time_per_thousand:.2f} ms")
 
+# Usage example with FGSM and PGD
+from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
 
+# Setup the attacks
+
+model.to(device)  # Ensure the model is on the correct device
+
+fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)
+pgd_attack = ProjectedGradientDescent(estimator=classifier, eps=0.1, max_iter=40)
+
+# Evaluate using FGSM
+evaluate_model_with_reverse_sigmoid_and_attack(model, test_loader, device, fgsm_attack)
+
+# Evaluate using PGD
+evaluate_model_with_reverse_sigmoid_and_attack(model, test_loader, device, pgd_attack)

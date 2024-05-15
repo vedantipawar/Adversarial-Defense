@@ -1,4 +1,5 @@
-"""#Imports"""
+
+## Imports
 
 import os
 import time
@@ -21,16 +22,17 @@ from PIL import Image
 if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
 
-"""#Model Settings"""
+"""## Model Settings"""
+
 ##########################
 ### SETTINGS
 ##########################
 
 # Hyperparameters
 RANDOM_SEED = 1
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 BATCH_SIZE = 128
-NUM_EPOCHS = 20
+NUM_EPOCHS = 10
 
 # Architecture
 NUM_FEATURES = 28*28
@@ -40,33 +42,34 @@ NUM_CLASSES = 10
 DEVICE = "cuda:0"
 GRAYSCALE = True
 
-"""#MNIST Dataset"""
+"""### MNIST Dataset"""
+
 ##########################
 ### MNIST DATASET
 ##########################
 
 # Note transforms.ToTensor() scales input images
 # to 0-1 range
-train_dataset = datasets.MNIST(root='data', 
-                               train=True, 
+train_dataset = datasets.MNIST(root='data',
+                               train=True,
                                transform=transforms.ToTensor(),
                                download=True)
 
-test_dataset = datasets.MNIST(root='data', 
-                              train=False, 
+test_dataset = datasets.MNIST(root='data',
+                              train=False,
                               transform=transforms.ToTensor())
 
 
-train_loader = DataLoader(dataset=train_dataset, 
-                          batch_size=BATCH_SIZE, 
+train_loader = DataLoader(dataset=train_dataset,
+                          batch_size=BATCH_SIZE,
                           shuffle=True)
 
-test_loader = DataLoader(dataset=test_dataset, 
-                         batch_size=BATCH_SIZE, 
+test_loader = DataLoader(dataset=test_dataset,
+                         batch_size=BATCH_SIZE,
                          shuffle=False)
 
 # Checking the dataset
-for images, labels in train_loader:  
+for images, labels in train_loader:
     print('Image batch dimensions:', images.shape)
     print('Image label dimensions:', labels.shape)
     break
@@ -77,15 +80,16 @@ torch.manual_seed(0)
 for epoch in range(2):
 
     for batch_idx, (x, y) in enumerate(train_loader):
-        
+
         print('Epoch:', epoch+1, end='')
         print(' | Batch index:', batch_idx, end='')
         print(' | Batch size:', y.size()[0])
-        
+
         x = x.to(device)
         y = y.to(device)
         break
 
+"""The following code cell that implements the ResNet-34 architecture is a derivative of the code provided at https://pytorch.org/docs/0.4.0/_modules/torchvision/models/resnet.html."""
 
 ##########################
 ### MODEL
@@ -98,19 +102,16 @@ def conv3x3(in_planes, out_planes, stride=1):
                      padding=1, bias=False)
 
 
-class Bottleneck(nn.Module):
-    expansion = 4
+class BasicBlock(nn.Module):
+    expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(Bottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * 4)
         self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -123,10 +124,6 @@ class Bottleneck(nn.Module):
 
         out = self.conv2(out)
         out = self.bn2(out)
-        out = self.relu(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -198,7 +195,7 @@ class ResNet(nn.Module):
         # because MNIST is already 1x1 here:
         # disable avg pooling
         #x = self.avgpool(x)
-        
+
         x = x.view(x.size(0), -1)
         logits = self.fc(x)
         probas = F.softmax(logits, dim=1)
@@ -206,21 +203,53 @@ class ResNet(nn.Module):
 
 
 
+
 def resnet34(num_classes):
     """Constructs a ResNet-34 model."""
-    model = ResNet(block=Bottleneck, 
+    model = ResNet(block=BasicBlock,
                    layers=[3, 4, 6, 3],
                    num_classes=NUM_CLASSES,
                    grayscale=GRAYSCALE)
     return model
 
-torch.manual_seed(RANDOM_SEED)
 
+torch.manual_seed(RANDOM_SEED)
 model = resnet34(NUM_CLASSES)
 model.to(DEVICE)
- 
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)  
 
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+#Importing Adversarial attacks
+from art.estimators.classification import PyTorchClassifier
+from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
+
+class ModelWrapper(nn.Module):
+    def __init__(self, model):
+        super(ModelWrapper, self).__init__()
+        self.model = model
+
+    def forward(self, x):
+        logits, _ = self.model(x)  # Assuming the model returns logits and probabilities
+        return logits
+
+model.eval()  # Set the model to evaluation mode
+
+
+wrapped_model = ModelWrapper(model)
+# Wrap the PyTorch model with ART's PyTorchClassifier
+classifier = PyTorchClassifier(
+    model=wrapped_model,
+    clip_values=(0, 1),
+    loss=torch.nn.CrossEntropyLoss(),
+    optimizer=optimizer,
+    input_shape=(1, 28, 28),
+    nb_classes=NUM_CLASSES,
+    device_type=DEVICE
+)
+# Define the attack
+attack = FastGradientMethod(estimator=classifier, eps=0.1)  # epsilon parameter for the FGSM attack
+
+
+# Initialize global variables
 """#Training MNIST"""
 # Initialize memory variables
 total_memory_allocated = 0
@@ -251,7 +280,7 @@ def save_checkpoint(epoch, model, optimizer, filename):
 import time
 start_time = time.time()  # Track start time
 # Load last checkpoint if available
-checkpoint_file = 'normalTraining.pth'  # Use direct file path
+checkpoint_file = 'advTraining.pth'  # Use direct file path
 if os.path.exists(checkpoint_file):
     checkpoint = torch.load(checkpoint_file)
     start_epoch = checkpoint['epoch']
@@ -263,37 +292,46 @@ else:
 
 
 # Training loop
+# Training loop
 for epoch in range(start_epoch, NUM_EPOCHS):
-    model.train()
+    model.train()  # Set model to training mode
     for batch_idx, (features, targets) in enumerate(train_loader):
-        features = features.to(DEVICE)
-        targets = targets.to(DEVICE)
+        features, targets = features.to(DEVICE), targets.to(DEVICE)
         
-        # Forward pass
-        logits, probas = model(features)
-        cost = F.cross_entropy(logits, targets)
-        
+        # Generate adversarial examples
+        adversarial_examples = attack.generate(x=features.cpu().numpy())  # Ensure this matches expected input
+        adversarial_examples = torch.tensor(adversarial_examples).to(DEVICE)  # Convert back to tensors and send to DEVICE
+
+        # Combine adversarial and clean samples based on the specified ratio
+        # Here we assume a 50-50 split for simplicity; adjust as needed
+        num_adv_samples = int(features.size(0) * 0.5)
+        mixed_features = torch.cat([features[:num_adv_samples], adversarial_examples[:num_adv_samples]], dim=0)
+        mixed_targets = torch.cat([targets[:num_adv_samples], targets[:num_adv_samples]], dim=0)
+
+        # Forward pass with mixed batch
+        logits, probas = model(mixed_features)
+        cost = F.cross_entropy(logits, mixed_targets)
+
         # Backward pass
         optimizer.zero_grad()
         cost.backward()
         optimizer.step()
-        
+
         # Logging
-        if not batch_idx % 50:
-            print ('Epoch: %03d/%03d | Batch %04d/%04d | Cost: %.4f' 
-                   %(epoch+1, NUM_EPOCHS, batch_idx, len(train_loader), cost))
+        if batch_idx % 50 == 0:
+            print(f'Epoch: {epoch+1}/{NUM_EPOCHS} | Batch {batch_idx}/{len(train_loader)} | Cost: {cost:.4f}')
     
     # Save model checkpoint
     save_checkpoint(epoch, model, optimizer, checkpoint_file)
     
     # Evaluation on training set
     model.eval()
-    with torch.set_grad_enabled(False): # save memory during inference
-        print('Epoch: %03d/%03d | Train: %.3f%%' % (
-              epoch+1, NUM_EPOCHS, 
-              compute_accuracy(model, train_loader, device=DEVICE)))
+    with torch.no_grad(): # save memory during inference
+        train_accuracy = compute_accuracy(model, train_loader, device=DEVICE)
+        print(f'Epoch: {epoch+1}/{NUM_EPOCHS} | Train Accuracy: {train_accuracy:.3f}%')
         
     print('Time elapsed: %.2f min' % ((time.time() - start_time)/60))
+
     # Memory tracking
     memory_allocated = torch.cuda.memory_allocated(DEVICE)
     memory_cached = torch.cuda.memory_reserved(DEVICE)
@@ -308,61 +346,30 @@ print(f'Total Memory Allocated: {total_memory_allocated_mb:.2f} MB')
 print(f'Total Memory Cached: {total_memory_cached_mb:.2f} MB')
 print('Total Training Time: %.2f min' % ((time.time() - start_time)/60))
 
-
-"""#Evaluation"""
 from sklearn.metrics import classification_report
 
-# Evaluation
-model.eval()
-y_true = []
-y_pred = []
-
-with torch.set_grad_enabled(False): # save memory during inference
-    for batch_idx, (features, targets) in enumerate(test_loader):
-        features = features.to(DEVICE)
-        targets = targets.to(DEVICE)
-
-        # Forward pass
-        logits, probas = model(features)
-        _, predicted_labels = torch.max(probas, 1)
-
-        # Append to lists
-        y_true.extend(targets.cpu().numpy())
-        y_pred.extend(predicted_labels.cpu().numpy())
-
-# Generate classification report
-target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-print(classification_report(y_true, y_pred, target_names=target_names))
-
-"""## MODEL WRAPPERS"""
-#Importing Adversarial attacks
-from art.estimators.classification import PyTorchClassifier
-from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
-
-class ModelWrapper(nn.Module):
-    def __init__(self, model):
-        super(ModelWrapper, self).__init__()
-        self.model = model
-
-    def forward(self, x):
-        logits, _ = self.model(x)  # Assuming the model returns logits and probabilities
-        return logits
+"""## Evaluation"""
+import torch
 
 model.eval()  # Set the model to evaluation mode
+all_preds = []
+all_labels = []
+
+with torch.no_grad():  # Inference mode, no gradients needed
+    for inputs, targets in test_loader:
+        inputs, targets = inputs.to(device), targets.to(device)
+        outputs, _ = model(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        all_preds.extend(predicted.cpu().numpy())  # Collect predictions
+        all_labels.extend(targets.cpu().numpy())  # Collect actual labels
+
+# Now `all_preds` and `all_labels` contain all the predictions and labels respectively
+print("Classification Report:")
+print(classification_report(all_labels, all_preds, digits=4))
 
 
-wrapped_model = ModelWrapper(model)
 
-# Wrap the PyTorch model with ART's PyTorchClassifier
-classifier = PyTorchClassifier(
-    model=wrapped_model,
-    clip_values=(0, 1),
-    loss=torch.nn.CrossEntropyLoss(),
-    optimizer=optimizer,
-    input_shape=(1, 28, 28),
-    nb_classes=NUM_CLASSES,
-    device_type=DEVICE
-)
+
 
 """# No defense attacks"""
 from sklearn.metrics import classification_report
@@ -604,8 +611,6 @@ with torch.set_grad_enabled(False):  # Disable gradients for inference efficienc
 
 # Generate and print classification reports
 target_names = [f"Class {i}" for i in range(NUM_CLASSES)]
-print("Original Classification Report without attacks High confidence:")
-print(classification_report(y_true, y_pred, target_names=target_names))
 
 print("High Confidence Classification Report:")
 print(classification_report(y_true, y_pred_confident, target_names=target_names, zero_division=0))
@@ -639,7 +644,7 @@ def evaluate_adversarial_attack_with_high_confidence(model, attack, data_loader,
         # Perform inference on adversarial examples
         logits, probas = model(x_test_adv_torch)
 
-        # Apply High Confidence postprocessing
+         # Apply High Confidence postprocessing
         probas_detached = probas.detach().cpu().numpy()  # Detach and convert to NumPy array
         probas_postprocessed_np = high_confidence_postprocessor(probas_detached)  # Apply HighConfidence
         probas_postprocessed = torch.tensor(probas_postprocessed_np).to(device)  # Convert back to PyTorch tensor
@@ -688,17 +693,20 @@ print(f"PGD Inference Speed: {speed:.2f} ms per 1000 images")
 ##############################
 #### REVERSE SIGMOID #######
 #############################
-"""#Accuracy on clean images RS without attacks"""
+
 from art.defences.postprocessor import ReverseSigmoid
 reverse_sigmoid_postprocessor = ReverseSigmoid(beta=1.0, gamma=0.1, apply_fit=False, apply_predict=True)
+
+"""#Accuracy on clean images RS without attacks"""
 def evaluate_with_reverse_sigmoid(model, data_loader, device):
     model.eval()  # Set the model to evaluation mode
     true_labels = []
     predicted_labels = []
     correct_pred, num_examples = 0, 0
-
+    total_inference_time = 0
     with torch.no_grad():
         for images, labels in data_loader:
+            start_time = time.time()
             images = images.to(device)
             labels = labels.to(device)
 
@@ -716,6 +724,9 @@ def evaluate_with_reverse_sigmoid(model, data_loader, device):
             # Predict labels based on postprocessed probabilities
             predicted_labels_batch = torch.argmax(probas_postprocessed, 1)
 
+            # End timing here
+            end_time = time.time()
+            total_inference_time += (end_time - start_time)
             # Accumulate true and predicted labels for classification report
             true_labels.extend(labels.cpu().numpy())
             predicted_labels.extend(predicted_labels_batch.cpu().numpy())
@@ -730,7 +741,8 @@ def evaluate_with_reverse_sigmoid(model, data_loader, device):
 
     # Generate and print classification report
     print(classification_report(true_labels, predicted_labels, digits=4))
-
+    time_per_thousand = (total_inference_time / num_examples) * 1000 if num_examples > 0 else 0
+    print('Inference time / 100 images: ', time_per_thousand)
 # Assuming you have defined test_loader and DEVICE
 evaluate_with_reverse_sigmoid(model, test_loader, DEVICE)
 
@@ -747,6 +759,7 @@ def evaluate_model_with_reverse_sigmoid_and_attack(model, data_loader, device, a
     true_labels = []
     predicted_labels = []
     total_inference_time = 0  # Initialize total inference time
+
 
     for images, labels in data_loader:
         images_np = images.numpy()  # Convert images to NumPy array for ART
@@ -792,13 +805,13 @@ def evaluate_model_with_reverse_sigmoid_and_attack(model, data_loader, device, a
     # Calculate and display inference time per 1000 images
     if num_examples > 0:
         time_per_thousand = (total_inference_time / num_examples) * 1000
-        print(f"Inference time for 1000 images: {time_per_thousand:.2f} s")
+        print(f"Inference time for 1000 images: {time_per_thousand:.2f} ms")
 
 # Usage example with FGSM and PGD
 from art.attacks.evasion import FastGradientMethod, ProjectedGradientDescent
 
 # Setup the attacks
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 model.to(device)  # Ensure the model is on the correct device
 
 fgsm_attack = FastGradientMethod(estimator=classifier, eps=0.2)

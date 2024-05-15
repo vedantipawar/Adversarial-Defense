@@ -191,9 +191,7 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        # because MNIST is already 1x1 here:
-        # disable avg pooling
-        #x = self.avgpool(x)
+        
         
         x = x.view(x.size(0), -1)
         logits = self.fc(x)
